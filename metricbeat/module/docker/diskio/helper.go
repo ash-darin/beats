@@ -207,7 +207,7 @@ func (io *BlkioService) getTotalPs(old *BlkioRaw, new *BlkioRaw) float64 {
 }
 
 func calculatePerSecond(duration time.Duration, old uint64, new uint64) float64 {
-	value := float64(new) - float64(old)
+	value := new - old
 	if value < 0 {
 		value = 0
 	}
@@ -217,5 +217,5 @@ func calculatePerSecond(duration time.Duration, old uint64, new uint64) float64 
 		return 0
 	}
 
-	return value / timeSec
+	return float64(value) / timeSec
 }
