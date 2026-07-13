@@ -48,6 +48,6 @@ package: ## Package heartbeat for the artifacts consumed by the ironbank docker 
 validate-ironbank: prepare
 	docker build \
 		--build-arg BASE_REGISTRY=index.docker.io \
-		--build-arg BASE_IMAGE=redhat/ubi10-minimal \
-		--build-arg BASE_TAG=latest \
+		--build-arg BASE_IMAGE=redhat/ubi9-minimal \
+		--build-arg BASE_TAG=9.8 \
 		$(LOCATION)
