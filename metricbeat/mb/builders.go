@@ -24,6 +24,7 @@ import (
 
 	"github.com/gofrs/uuid/v5"
 
+	"github.com/elastic/beats/v7/libbeat/beat"
 	conf "github.com/elastic/elastic-agent-libs/config"
 	"github.com/elastic/elastic-agent-libs/logp"
 	"github.com/elastic/elastic-agent-libs/monitoring"
@@ -40,6 +41,9 @@ var (
 
 	// ErrModuleDisabled indicates a disabled module has been tried to instantiate.
 	ErrModuleDisabled = errors.New("disabled module")
+
+	// ErrPathsRequired indicates that paths were nil when creating a module.
+	ErrPathsRequired = errors.New("paths must not be nil when creating a module")
 )
 
 // NewModule builds a new Module and its associated MetricSets based on the
@@ -47,22 +51,26 @@ var (
 // will be unpacked into ModuleConfig structs). r is the Register where the
 // ModuleFactory's and MetricSetFactory's will be obtained from. This method
 // returns a Module and its configured MetricSets or an error.
-func NewModule(config *conf.C, r *Register, p *paths.Path, logger *logp.Logger) (Module, []MetricSet, error) {
+func NewModule(config *conf.C, r *Register, info beat.Info) (Module, []MetricSet, error) {
 	if !config.Enabled() {
 		return nil, nil, ErrModuleDisabled
 	}
+	if info.Paths == nil {
+		return nil, nil, ErrPathsRequired
+	}
 
-	bm, err := newBaseModuleFromConfig(config, logger)
+	bm, err := newBaseModuleFromConfig(config, info.Logger, info.Paths)
 	if err != nil {
 		return nil, nil, err
 	}
+	bm.userAgent = info.UserAgent
 
 	module, err := createModule(r, bm)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	metricsets, err := initMetricSets(r, module, p, logger)
+	metricsets, err := initMetricSets(r, module, info.Paths, info.Logger)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -72,11 +80,12 @@ func NewModule(config *conf.C, r *Register, p *paths.Path, logger *logp.Logger) 
 
 // newBaseModuleFromConfig creates a new BaseModule from config. The returned
 // BaseModule's name will always be lower case.
-func newBaseModuleFromConfig(rawConfig *conf.C, logger *logp.Logger) (BaseModule, error) {
+func newBaseModuleFromConfig(rawConfig *conf.C, logger *logp.Logger, paths *paths.Path) (BaseModule, error) {
 	baseModule := BaseModule{
 		config:    DefaultModuleConfig(),
 		rawConfig: rawConfig,
 		Logger:    logger,
+		Paths:     paths,
 	}
 	err := rawConfig.Unpack(&baseModule.config)
 	if err != nil {
@@ -108,9 +117,7 @@ func createModule(r *Register, bm BaseModule) (Module, error) {
 }
 
 func initMetricSets(r *Register, m Module, p *paths.Path, logger *logp.Logger) ([]MetricSet, error) {
-	var (
-		errs []error
-	)
+	var errs []error
 
 	bms, err := newBaseMetricSets(r, m, p, logger)
 	if err != nil {
@@ -203,7 +210,7 @@ func newBaseMetricSets(r *Register, m Module, p *paths.Path, logger *logp.Logger
 			if m.Config().ID != "" {
 				logger = logger.With("id", m.Config().ID)
 			}
-			metricsets = append(metricsets, BaseMetricSet{
+			metricsets = append(metricsets, BaseMetricSet{ //nolint:exhaustruct // hostData and registration are set after construction
 				id:      msID,
 				name:    name,
 				module:  m,

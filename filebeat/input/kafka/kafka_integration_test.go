@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// This file was contributed to by generative AI
 //go:build integration
 
 package kafka
@@ -23,11 +24,11 @@ import (
 	"context"
 	"fmt"
 	"math/rand/v2"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/elastic/beats/v7/filebeat/input/kafka/testutil"
 	v2 "github.com/elastic/beats/v7/filebeat/input/v2"
 	beattest "github.com/elastic/beats/v7/libbeat/publisher/testing"
 	"github.com/elastic/beats/v7/testing/testutils"
@@ -45,26 +46,13 @@ import (
 	_ "github.com/elastic/beats/v7/libbeat/outputs/codec/json"
 )
 
-const (
-	kafkaDefaultHost     = "localhost"
-	kafkaDefaultPort     = "9094"
-	kafkaDefaultSASLPort = "9093"
-)
-
 type testMessage struct {
 	message string
 	headers []sarama.RecordHeader
 }
 
-func recordHeader(key, value string) sarama.RecordHeader {
-	return sarama.RecordHeader{
-		Key:   []byte(key),
-		Value: []byte(value),
-	}
-}
-
 func TestInput(t *testing.T) {
-	testTopic := createTestTopicName()
+	testTopic := createReadyTestTopic(t)
 	groupID := "filebeat"
 
 	// Send test messages to the topic for the input to read.
@@ -73,24 +61,24 @@ func TestInput(t *testing.T) {
 		{
 			message: "stuff",
 			headers: []sarama.RecordHeader{
-				recordHeader("X-Test-Header", "test header value"),
+				testutil.RecordHeader("X-Test-Header", "test header value"),
 			},
 		},
 		{
 			message: "things",
 			headers: []sarama.RecordHeader{
-				recordHeader("keys and things", "3^3 = 27"),
-				recordHeader("kafka yay", "3^3 - 2^4 = 11"),
+				testutil.RecordHeader("keys and things", "3^3 = 27"),
+				testutil.RecordHeader("kafka yay", "3^3 - 2^4 = 11"),
 			},
 		},
 	}
 	for _, m := range messages {
-		writeToKafkaTopic(t, testTopic, m.message, m.headers)
+		testutil.WriteToKafkaTopic(t, testTopic, m.message, m.headers)
 	}
 
 	// Setup the input config
 	config := conf.MustNewConfigFrom(mapstr.M{
-		"hosts":      getTestKafkaHost(),
+		"hosts":      testutil.GetTestKafkaHost(),
 		"topics":     []string{testTopic},
 		"group_id":   groupID,
 		"wait_close": 0,
@@ -152,20 +140,20 @@ func TestInput(t *testing.T) {
 }
 
 func TestInputWithMultipleEvents(t *testing.T) {
-	testTopic := createTestTopicName()
+	testTopic := createReadyTestTopic(t)
 
 	// Send test messages to the topic for the input to read.
 	message := testMessage{
 		message: "{\"records\": [{\"val\":\"val1\"}, {\"val\":\"val2\"}]}",
 		headers: []sarama.RecordHeader{
-			recordHeader("X-Test-Header", "test header value"),
+			testutil.RecordHeader("X-Test-Header", "test header value"),
 		},
 	}
-	writeToKafkaTopic(t, testTopic, message.message, message.headers)
+	testutil.WriteToKafkaTopic(t, testTopic, message.message, message.headers)
 
 	// Setup the input config
 	config := conf.MustNewConfigFrom(mapstr.M{
-		"hosts":                        getTestKafkaHost(),
+		"hosts":                        testutil.GetTestKafkaHost(),
 		"topics":                       []string{testTopic},
 		"group_id":                     "filebeat",
 		"wait_close":                   0,
@@ -208,20 +196,20 @@ func TestInputWithMultipleEvents(t *testing.T) {
 }
 
 func TestInputWithJsonPayload(t *testing.T) {
-	testTopic := createTestTopicName()
+	testTopic := createReadyTestTopic(t)
 
 	// Send test message to the topic for the input to read.
 	message := testMessage{
 		message: "{\"val\":\"val1\"}",
 		headers: []sarama.RecordHeader{
-			recordHeader("X-Test-Header", "test header value"),
+			testutil.RecordHeader("X-Test-Header", "test header value"),
 		},
 	}
-	writeToKafkaTopic(t, testTopic, message.message, message.headers)
+	testutil.WriteToKafkaTopic(t, testTopic, message.message, message.headers)
 
 	// Setup the input config
 	config := conf.MustNewConfigFrom(mapstr.M{
-		"hosts":      getTestKafkaHost(),
+		"hosts":      testutil.GetTestKafkaHost(),
 		"topics":     []string{testTopic},
 		"group_id":   "filebeat",
 		"wait_close": 0,
@@ -270,20 +258,20 @@ func TestInputWithJsonPayload(t *testing.T) {
 }
 
 func TestInputWithJsonPayloadAndMultipleEvents(t *testing.T) {
-	testTopic := createTestTopicName()
+	testTopic := createReadyTestTopic(t)
 
 	// Send test messages to the topic for the input to read.
 	message := testMessage{
 		message: "{\"records\": [{\"val\":\"val1\"}, {\"val\":\"val2\"}]}",
 		headers: []sarama.RecordHeader{
-			recordHeader("X-Test-Header", "test header value"),
+			testutil.RecordHeader("X-Test-Header", "test header value"),
 		},
 	}
-	writeToKafkaTopic(t, testTopic, message.message, message.headers)
+	testutil.WriteToKafkaTopic(t, testTopic, message.message, message.headers)
 
 	// Setup the input config
 	config := conf.MustNewConfigFrom(mapstr.M{
-		"hosts":                        getTestKafkaHost(),
+		"hosts":                        testutil.GetTestKafkaHost(),
 		"topics":                       []string{testTopic},
 		"group_id":                     "filebeat",
 		"wait_close":                   0,
@@ -357,7 +345,7 @@ func TestSASLAuthentication(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			testTopic := createTestTopicName()
+			testTopic := createReadyTestTopic(t)
 			groupID := "filebeat"
 
 			// Send test messages to the topic for the input to read.
@@ -366,12 +354,12 @@ func TestSASLAuthentication(t *testing.T) {
 				{message: fmt.Sprintf("sasl test with %s", tc.name)},
 			}
 			for _, m := range messages {
-				writeToKafkaTopic(t, testTopic, m.message, m.headers)
+				testutil.WriteToKafkaTopic(t, testTopic, m.message, m.headers)
 			}
 
 			// Setup the input config
 			config := conf.MustNewConfigFrom(mapstr.M{
-				"hosts":          []string{getTestSASLKafkaHost()},
+				"hosts":          []string{testutil.GetTestSASLKafkaHost()},
 				"protocol":       "https",
 				"sasl.mechanism": tc.mechanism,
 				// Disable hostname verification since we are likely writing to localhost.
@@ -445,20 +433,20 @@ func TestSASLAuthentication(t *testing.T) {
 }
 
 func TestTest(t *testing.T) {
-	testTopic := createTestTopicName()
+	testTopic := createReadyTestTopic(t)
 
 	// Send test messages to the topic for the input to read.
 	message := testMessage{
 		message: "{\"records\": [{\"val\":\"val1\"}, {\"val\":\"val2\"}]}",
 		headers: []sarama.RecordHeader{
-			recordHeader("X-Test-Header", "test header value"),
+			testutil.RecordHeader("X-Test-Header", "test header value"),
 		},
 	}
-	writeToKafkaTopic(t, testTopic, message.message, message.headers)
+	testutil.WriteToKafkaTopic(t, testTopic, message.message, message.headers)
 
 	// Setup the input config
 	config := conf.MustNewConfigFrom(mapstr.M{
-		"hosts":    getTestKafkaHost(),
+		"hosts":    testutil.GetTestKafkaHost(),
 		"topics":   []string{testTopic},
 		"group_id": "filebeat",
 	})
@@ -476,8 +464,13 @@ func TestTest(t *testing.T) {
 	}
 }
 
-func createTestTopicName() string {
+func createReadyTestTopic(t *testing.T) string {
+	t.Helper()
+
 	testTopic := fmt.Sprintf("Filebeat-TestInput-%d", rand.Int())
+	// Topic auto-creation is asynchronous; explicitly wait for leaders to avoid
+	// transient "no leader for this partition" write failures in CI.
+	testutil.EnsureKafkaTopicReadyForWrites(t, testTopic)
 	return testTopic
 }
 
@@ -515,7 +508,7 @@ func checkMatchingHeaders(
 	if !ok {
 		t.Fatal("event.Fields.kafka.headers isn't a []string")
 	}
-	assert.Equal(t, len(expected), len(headerArray))
+	assert.Len(t, headerArray, len(expected))
 	for i := 0; i < len(expected); i++ {
 		splitIndex := strings.Index(headerArray[i], ": ")
 		if splitIndex == -1 {
@@ -530,34 +523,9 @@ func checkMatchingHeaders(
 	}
 }
 
-func strDefault(a, defaults string) string {
-	if a == "" {
-		return defaults
-	}
-	return a
-}
-
-func getenv(name, defaultValue string) string {
-	return strDefault(os.Getenv(name), defaultValue)
-}
-
-func getTestKafkaHost() string {
-	return fmt.Sprintf("%v:%v",
-		getenv("KAFKA_HOST", kafkaDefaultHost),
-		getenv("KAFKA_PORT", kafkaDefaultPort),
-	)
-}
-
-func getTestSASLKafkaHost() string {
-	return fmt.Sprintf("%v:%v",
-		getenv("KAFKA_HOST", kafkaDefaultHost),
-		getenv("KAFKA_SASL_PORT", kafkaDefaultSASLPort),
-	)
-}
-
 func assertOffset(t *testing.T, groupID, topic string, expected int64) {
 	t.Helper()
-	client, err := sarama.NewClient([]string{getTestKafkaHost()}, nil)
+	client, err := sarama.NewClient([]string{testutil.GetTestKafkaHost()}, nil)
 	assert.NoError(t, err)
 	defer client.Close()
 
@@ -585,40 +553,6 @@ func assertOffset(t *testing.T, groupID, topic string, expected int64) {
 	}
 
 	assert.Equal(t, expected, offsetSum, "offset does not match, perhaps messages were not acknowledged")
-}
-
-func writeToKafkaTopic(
-	t *testing.T, topic string, message string,
-	headers []sarama.RecordHeader,
-) {
-	t.Helper()
-	config := sarama.NewConfig()
-	config.Producer.RequiredAcks = sarama.WaitForAll
-	config.Producer.Return.Successes = true
-	config.Producer.Partitioner = sarama.NewHashPartitioner
-	config.Version = sarama.V1_0_0_0
-
-	hosts := []string{getTestKafkaHost()}
-	producer, err := sarama.NewSyncProducer(hosts, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := producer.Close(); err != nil {
-			t.Fatal(err)
-		}
-	}()
-
-	msg := &sarama.ProducerMessage{
-		Topic:   topic,
-		Value:   sarama.StringEncoder(message),
-		Headers: headers,
-	}
-
-	_, _, err = producer.SendMessage(msg)
-	if err != nil {
-		t.Fatal(err)
-	}
 }
 
 func run(t *testing.T, cfg *conf.C, client *beattest.ChanClient) (*kafkaInput, func()) {

@@ -7,6 +7,7 @@ package instance
 import (
 	"maps"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -40,7 +41,7 @@ func TestManager(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NotNil(t, beat.Manager)
 		// it should fallback to FallbackManager if key is missing
-		assert.IsType(t, beat.Manager, &management.FallbackManager{})
+		assert.IsType(t, &management.FallbackManager{}, beat.Manager)
 		assert.False(t, management.UnderAgent())
 	})
 	t.Run("otel management enabled", func(t *testing.T) {
@@ -53,7 +54,7 @@ func TestManager(t *testing.T) {
 		beat, err := NewBeatForReceiver(cmd.FilebeatSettings("filebeat"), tmpCfg, consumertest.NewNop(), "testcomponent", zapcore.NewNopCore())
 		assert.NoError(t, err)
 		assert.NotNil(t, beat.Manager)
-		assert.IsType(t, beat.Manager, &otelmanager.OtelManager{})
+		assert.IsType(t, &otelmanager.OtelManager{}, beat.Manager)
 		assert.True(t, management.UnderAgent())
 
 		// test if log input is enabled
@@ -72,7 +73,7 @@ type: "log"`)
 		beat, err := NewBeatForReceiver(cmd.FilebeatSettings("filebeat"), tmpCfg, consumertest.NewNop(), "testcomponent", zapcore.NewNopCore())
 		assert.NoError(t, err)
 		assert.NotNil(t, beat.Manager)
-		assert.IsType(t, beat.Manager, &management.FallbackManager{})
+		assert.IsType(t, &management.FallbackManager{}, beat.Manager)
 		assert.False(t, management.UnderAgent())
 
 		// test if log input is disabled
@@ -80,5 +81,68 @@ type: "log"`)
 type: "log"`)
 		require.NoError(t, err)
 		assert.False(t, log.AllowDeprecatedUse(cfg))
+	})
+}
+
+func TestNewBeatForReceiverMetricLoggingDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+	baseCfg := map[string]any{
+		"filebeat": map[string]any{
+			"inputs": []map[string]any{
+				{
+					"type":    "benchmark",
+					"enabled": true,
+					"message": "test",
+					"count":   10,
+				},
+			},
+		},
+		"path.home": tmpDir,
+	}
+
+	t.Run("defaults to disabled metric logging when unset", func(t *testing.T) {
+		beat, err := NewBeatForReceiver(cmd.FilebeatSettings("filebeat"), baseCfg, consumertest.NewNop(), "testcomponent", zapcore.NewNopCore())
+		require.NoError(t, err)
+		require.NotNil(t, beat.Config.MetricLogging)
+
+		var metricCfg struct {
+			Period time.Duration `config:"period"`
+		}
+		require.NoError(t, beat.Config.MetricLogging.Unpack(&metricCfg))
+		assert.Equal(t, time.Duration(0), metricCfg.Period)
+	})
+
+	t.Run("honors an explicitly configured period", func(t *testing.T) {
+		tmpCfg := map[string]any{}
+		maps.Copy(tmpCfg, baseCfg)
+		tmpCfg["logging.metrics.period"] = "15s"
+
+		beat, err := NewBeatForReceiver(cmd.FilebeatSettings("filebeat"), tmpCfg, consumertest.NewNop(), "testcomponent", zapcore.NewNopCore())
+		require.NoError(t, err)
+		require.NotNil(t, beat.Config.MetricLogging)
+
+		var metricCfg struct {
+			Period time.Duration `config:"period"`
+		}
+		require.NoError(t, beat.Config.MetricLogging.Unpack(&metricCfg))
+		assert.Equal(t, 15*time.Second, metricCfg.Period)
+	})
+
+	t.Run("keeps the default period when an unrelated metric logging field is set", func(t *testing.T) {
+		tmpCfg := map[string]any{}
+		maps.Copy(tmpCfg, baseCfg)
+		tmpCfg["logging.metrics.enabled"] = true
+
+		beat, err := NewBeatForReceiver(cmd.FilebeatSettings("filebeat"), tmpCfg, consumertest.NewNop(), "testcomponent", zapcore.NewNopCore())
+		require.NoError(t, err)
+		require.NotNil(t, beat.Config.MetricLogging)
+
+		var metricCfg struct {
+			Enabled bool          `config:"enabled"`
+			Period  time.Duration `config:"period"`
+		}
+		require.NoError(t, beat.Config.MetricLogging.Unpack(&metricCfg))
+		assert.True(t, metricCfg.Enabled)
+		assert.Equal(t, time.Duration(0), metricCfg.Period)
 	})
 }

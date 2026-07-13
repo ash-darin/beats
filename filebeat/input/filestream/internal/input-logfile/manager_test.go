@@ -53,7 +53,11 @@ func (m noopProspector) Init(_, _ StoreUpdater, _ func(Source) string) error {
 	return nil
 }
 
-func (m noopProspector) Run(_ v2.Context, _ StateMetadataUpdater, _ HarvesterGroup) {}
+func (m noopProspector) TakeOver(_ StoreUpdater, _ func(Source) string) error {
+	return nil
+}
+
+func (m noopProspector) Run(_ v2.Context, _ StateMetadataUpdater, _ HarvesterGroup, _ *Metrics) {}
 
 func (m noopProspector) Test() error {
 	return nil
@@ -332,14 +336,14 @@ paths:
 				err,
 				"'/**/**' is not supported, input creation must fail")
 
-			require.Len(t, cim.ids, 0, "no ID must be present in cim.ids")
+			require.Empty(t, cim.ids, "no ID must be present in cim.ids")
 			// Attempt to create the second input with the valid configuration
 			_, err = cim.Create(validCfg)
 			require.NoError(
 				t,
 				err,
 				"The same ID can be re-used after an input fails to start")
-			require.EqualValues(
+			require.Equal(
 				t,
 				map[string]struct{}{"t-wing": {}},
 				cim.ids,
@@ -367,7 +371,7 @@ paths:
 			_, err = cim.Create(invalidCfg)
 			require.Error(t, err, "'/**/**' is not supported, input creation must fail")
 			// The ID of the valid input must still be in the ids list
-			require.EqualValues(
+			require.Equal(
 				t,
 				map[string]struct{}{"t-wing": {}},
 				cim.ids,
@@ -429,6 +433,8 @@ func newBufferLogger() (*logp.Logger, *bytes.Buffer) {
 	encoderConfig := zap.NewProductionEncoderConfig()
 	encoder := zapcore.NewJSONEncoder(encoderConfig)
 	writeSyncer := zapcore.AddSync(buf)
+	//nolint:forbidigo // This test needs to create a local instance of the
+	// logger and expose the buffer it writes to.
 	log := logp.NewLogger("", zap.WrapCore(func(_ zapcore.Core) zapcore.Core {
 		return zapcore.NewCore(encoder, writeSyncer, zapcore.DebugLevel)
 	}))

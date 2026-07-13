@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	loginp "github.com/elastic/beats/v7/filebeat/input/filestream/internal/input-logfile"
 	"github.com/elastic/beats/v7/libbeat/tests/integration"
@@ -31,7 +32,7 @@ import (
 
 func TestFileWatcherNotifications(t *testing.T) {
 	testCases := map[string]func(t *testing.T, fw *fileWatcher, evt loginp.FSEvent, dir, logFilePath string){
-		"Partially ingested file": func(t *testing.T, fw *fileWatcher, evt loginp.FSEvent, dir, logFilePath string) {
+		"Partially ingested file": func(t *testing.T, fw *fileWatcher, _ loginp.FSEvent, dir, logFilePath string) {
 			// Tests the case:
 			//  - watch runs and sees a new file, it sends a create event
 			//  - data is added to the file
@@ -42,8 +43,8 @@ func TestFileWatcherNotifications(t *testing.T) {
 
 			// Write to the file, so we get a write operation
 			integration.WriteLogFile(t, logFilePath, 10, true)
-			fw.watch(t.Context())
-			evt = <-fw.events
+			fw.watch(t.Context(), newTestMetrics(), 0, time.Time{})
+			evt := <-fw.events
 			requireOperation(t, evt, loginp.OpWrite)
 
 			// Check the filewatcher state
@@ -69,13 +70,47 @@ func TestFileWatcherNotifications(t *testing.T) {
 				t.Fatal("closed harvester notification did not populate 'closedHarvesters'")
 			}
 
-			fw.watch(t.Context())
+			fw.watch(t.Context(), newTestMetrics(), 0, time.Time{})
 			evt = <-fw.events
 			// Because of the notification sent with a smaller size than the actual file
 			// we should get a write operation
 			requireOperation(t, evt, loginp.OpWrite)
 
 			// And closedHarvesters must be empty
+			l := len(fw.closedHarvesters)
+			if l != 0 {
+				t.Fatalf("expecting 'closedHarvesters' to be empty, got %d items", l)
+			}
+		},
+
+		"New file, harvester closed at offset 0": func(t *testing.T, fw *fileWatcher, evt loginp.FSEvent, dir, logFilePath string) {
+			// Reproduces the offset-0 harvester-close race:
+			//  - watch sees a new file, sends a create event (done in setup)
+			//  - the harvester is closed during the initial backoff before ingesting anything, so
+			//    it reports offset 0
+			//  - scan runs again, must use the 0 from the notification and send a write event so a
+			//    new harvester restarts and ingests the data
+
+			// Notify the harvester has closed at offset 0 (nothing ingested)
+			fw.processNotification(loginp.HarvesterStatus{
+				ID:   evt.SrcID,
+				Size: 0,
+			})
+
+			// Ensure closedHarvester is populated
+			if _, ok := fw.closedHarvesters[evt.SrcID]; !ok {
+				t.Fatal("closed harvester notification did not populate 'closedHarvesters'")
+			}
+
+			fw.watch(t.Context(), newTestMetrics(), 0, time.Time{})
+			// Because the harvester reported offset 0 while the file has data, a write operation
+			// must be generated to restart ingestion.
+			if len(fw.events) == 0 {
+				t.Fatal("expecting a write event after offset-0 harvester close, got none (data loss)")
+			}
+			evt = <-fw.events
+			requireOperation(t, evt, loginp.OpWrite)
+
 			l := len(fw.closedHarvesters)
 			if l != 0 {
 				t.Fatalf("expecting 'closedHarvesters' to be empty, got %d items", l)
@@ -97,7 +132,7 @@ func TestFileWatcherNotifications(t *testing.T) {
 			if _, ok := fw.closedHarvesters[evt.SrcID]; !ok {
 				t.Fatal("closed harvester notification did not populate 'closedHarvesters'")
 			}
-			fw.watch(t.Context())
+			fw.watch(t.Context(), newTestMetrics(), 0, time.Time{})
 
 			// The fileWatcher state has not changed, no events should be generated
 			eventsWritten := len(fw.events)
@@ -130,7 +165,7 @@ func TestFileWatcherNotifications(t *testing.T) {
 			}
 
 			// A delete event must be generated
-			fw.watch(t.Context())
+			fw.watch(t.Context(), newTestMetrics(), 0, time.Time{})
 			evt = <-fw.events
 			requireOperation(t, evt, loginp.OpDelete)
 
@@ -160,7 +195,7 @@ func TestFileWatcherNotifications(t *testing.T) {
 			}
 
 			// A rename event must be generated
-			fw.watch(t.Context())
+			fw.watch(t.Context(), newTestMetrics(), 0, time.Time{})
 			evt = <-fw.events
 			requireOperation(t, evt, loginp.OpRename)
 
@@ -200,7 +235,7 @@ func TestFileWatcherNotifications(t *testing.T) {
 			fw.events = make(chan loginp.FSEvent, 1)
 
 			// Scan the file system once
-			fw.watch(t.Context())
+			fw.watch(t.Context(), newTestMetrics(), 0, time.Time{})
 			evt := <-fw.events
 			requireOperation(t, evt, loginp.OpCreate)
 
@@ -215,4 +250,10 @@ func requireOperation(t *testing.T, evt loginp.FSEvent, op loginp.Operation) {
 	if evt.Op != op {
 		t.Fatalf("expecting operation %q, got: %q", op.String(), evt.Op.String())
 	}
+}
+
+func mustFingerprintIdentifier() fileIdentifier {
+	fi, _ := newFingerprintIdentifier(nil, nil)
+
+	return fi
 }

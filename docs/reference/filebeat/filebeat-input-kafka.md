@@ -4,6 +4,7 @@ mapped_pages:
   - https://www.elastic.co/guide/en/beats/filebeat/current/filebeat-input-kafka.html
 applies_to:
   stack: ga
+  serverless: ga
 ---
 
 # Kafka input [filebeat-input-kafka]
@@ -43,7 +44,7 @@ For more details on the mapping between Kafka and Event Hubs configuration param
 
 ## Compatibility [kafka-input-compatibility]
 
-This input works with all Kafka versions in between 0.11 and 2.8.0. Older versions might work as well, but are not supported.
+This input works with all Kafka versions between 0.11 and 4.1.0. Earlier versions might work as well, but are not supported.
 
 
 ## Configuration options [filebeat-input-kafka-options]
@@ -93,6 +94,38 @@ How long to wait before trying to reconnect to the kafka cluster after a fatal e
 ### `consume_backoff` [_consume_backoff]
 
 How long to wait before retrying a failed read. Default is 2s.
+
+
+### `timeout` [_timeout_2]
+```{applies_to}
+stack: ga 9.5
+```
+
+The network timeout for the connection to the Kafka brokers, applied to the dial, read, and write deadlines. Increase this for consumers reading across higher-latency links (for example cross-region or WAN), where a large fetch response may not be fully read within the default deadline. Default is 30s.
+
+
+### `keep_alive` [_keep_alive]
+```{applies_to}
+stack: ga 9.5
+```
+
+The keep-alive period for the active network connection to the Kafka brokers. Default is 0s (disabled).
+
+
+### `session_timeout` [_session_timeout]
+```{applies_to}
+stack: ga 9.5
+```
+
+The consumer group session timeout. If the broker receives no heartbeat from a consumer within this period, the consumer is removed from the group and a rebalance is triggered. Consumers on higher-latency links may need a larger value to avoid spurious rebalances. Default is 10s.
+
+
+### `heartbeat_interval` [_heartbeat_interval]
+```{applies_to}
+stack: ga 9.5
+```
+
+How often the consumer sends heartbeats to the broker. This must be lower than `session_timeout`, and is typically set to no more than a third of that value. Default is 3s.
 
 
 ### `max_wait_time` [_max_wait_time]

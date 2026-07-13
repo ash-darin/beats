@@ -21,7 +21,9 @@ import (
 	"context"
 	"regexp"
 	"testing"
+	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	loginp "github.com/elastic/beats/v7/filebeat/input/filestream/internal/input-logfile"
@@ -120,8 +122,6 @@ func TestCopyTruncateProspector_Create(t *testing.T) {
 	}
 
 	for name, test := range testCases {
-		test := test
-
 		t.Run(name, func(t *testing.T) {
 			p := copyTruncateFileProspector{
 				fileProspector{
@@ -134,9 +134,9 @@ func TestCopyTruncateProspector_Create(t *testing.T) {
 			ctx := input.Context{Logger: logp.NewNopLogger(), Cancelation: context.Background()}
 			hg := newTestHarvesterGroup()
 
-			p.Run(ctx, newMockMetadataUpdater(), hg)
+			p.Run(ctx, newMockMetadataUpdater(), hg, nil)
 
-			require.Equal(t, len(test.expectedEvents), len(hg.events))
+			require.Len(t, hg.events, len(test.expectedEvents))
 			for i := 0; i < len(test.expectedEvents); i++ {
 				require.Equal(t, test.expectedEvents[i], hg.events[i])
 			}
@@ -146,7 +146,7 @@ func TestCopyTruncateProspector_Create(t *testing.T) {
 				if !ok {
 					t.Fatalf("cannot find %s in original files\n", originalFile)
 				}
-				require.Equal(t, len(rotatedFiles), len(rFile.rotated))
+				require.Len(t, rFile.rotated, len(rotatedFiles))
 				for i, rotatedFile := range rotatedFiles {
 					if rFile.rotated[i].path != rotatedFile {
 						t.Fatalf("%s is not a rotated file, instead %s is\n", rFile.rotated[i].path, rotatedFile)
@@ -210,7 +210,6 @@ func TestNumericSorter(t *testing.T) {
 	sorter := newNumericSorter()
 
 	for name, test := range testCases {
-		test := test
 		t.Run(name, func(t *testing.T) {
 			sorter.sort(test.fileinfos)
 			for i, fi := range test.fileinfos {
@@ -261,7 +260,6 @@ func TestDateSorter(t *testing.T) {
 	sorter := dateSorter{"-20060102"}
 
 	for name, test := range testCases {
-		test := test
 		t.Run(name, func(t *testing.T) {
 			sorter.sort(test.fileinfos)
 			for i, fi := range test.fileinfos {
@@ -269,4 +267,32 @@ func TestDateSorter(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDateSorterShortPath(t *testing.T) {
+	// Regression test: a path shorter than the configured date format must not
+	// trigger a slice-bounds panic. GetTs runs inside sort.Slice in a prospector
+	// goroutine where such a panic would crash the whole process.
+	s := dateSorter{"-20060102"}
+
+	t.Run("GetTs returns zero time for a path shorter than the format", func(t *testing.T) {
+		fi := rotatedFileInfo{path: "a.log"}
+		var ts time.Time
+		require.NotPanics(t, func() {
+			ts = s.GetTs(&fi)
+		}, "GetTs must not panic when the path is shorter than the date format")
+		assert.True(t, ts.IsZero(),
+			"GetTs should return a zero time for a path shorter than the format")
+	})
+
+	t.Run("sort does not panic when a path is shorter than the format", func(t *testing.T) {
+		files := []rotatedFileInfo{
+			{path: "/path/to/apache.log-20140508"},
+			{path: "x"},
+			{path: "/path/to/apache.log-20140506"},
+		}
+		require.NotPanics(t, func() {
+			s.sort(files)
+		}, "sort must not panic when a path is shorter than the date format")
+	})
 }

@@ -6,6 +6,7 @@ package httpjson
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,11 +21,13 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	v2 "github.com/elastic/beats/v7/filebeat/input/v2"
+	"github.com/elastic/beats/v7/libbeat/beat"
 	beattest "github.com/elastic/beats/v7/libbeat/publisher/testing"
 	conf "github.com/elastic/elastic-agent-libs/config"
 	"github.com/elastic/elastic-agent-libs/logp"
 	"github.com/elastic/elastic-agent-libs/mapstr"
 	"github.com/elastic/elastic-agent-libs/monitoring"
+	"github.com/elastic/elastic-agent-libs/paths"
 )
 
 var testCases = []struct {
@@ -59,6 +62,16 @@ var testCases = []struct {
 		},
 		handler:  defaultHandler(http.MethodGet, "", ""),
 		expected: []string{`{"hello":[{"world":"moon"},{"space":[{"cake":"pumpkin"}]}]}`},
+	},
+	{
+		name:        "simple_GET_request_returns_an_array_of_strings_no_events",
+		setupServer: newTestServer(httptest.NewServer),
+		baseConfig: map[string]interface{}{
+			"interval":       1,
+			"request.method": http.MethodGet,
+		},
+		handler:  defaultHandler(http.MethodGet, "", `["123", "456"]`),
+		expected: nil,
 	},
 	{
 		name:        "request_honors_rate_limit",
@@ -434,17 +447,26 @@ var testCases = []struct {
 		},
 		expectedNoFile: filepath.Join("httpjson", "logs", "http-request-trace-httpjson-foo-eb837d4c-5ced-45ed-b05c-de658135e248_https_somesource_someapi*"),
 	},
+	// Path containment is enforced regardless of whether the tracer is
+	// enabled. The enabled case is tested in
+	// httplog.TestResolveTraceFilename; the test harness here rewrites
+	// enabled tracer filenames into a temp dir, so only the disabled
+	// case can exercise an out-of-tree path at the input level.
 	{
-		name:        "tracer_escaping_logs",
-		setupServer: func(t testing.TB, h http.HandlerFunc, config map[string]interface{}) {},
+		name: "tracer_disabled_escaping_logs",
+		setupServer: func(t testing.TB, h http.HandlerFunc, config map[string]interface{}) {
+			server := httptest.NewServer(h)
+			config["request.url"] = server.URL
+			t.Cleanup(server.Close)
+		},
 		baseConfig: map[string]interface{}{
 			"interval":                1,
 			"request.method":          http.MethodGet,
-			"request.url":             "https://example.com/",
 			"request.tracer.enabled":  false,
 			"request.tracer.filename": "/var/log/http-request-trace-*.ndjson",
 		},
-		wantErr: fmt.Errorf(`request tracer path must be within %q path accessing 'request'`, inputName),
+		handler: defaultHandler(http.MethodGet, "", ""),
+		wantErr: errors.New("request tracer path"),
 	},
 	{
 		name: "pagination",
@@ -1045,6 +1067,114 @@ var testCases = []struct {
 		},
 	},
 	{
+		name: "replace_with_clause_with_values_from_string_array",
+		setupServer: func(t testing.TB, h http.HandlerFunc, config map[string]interface{}) {
+			r := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/":
+					fmt.Fprintln(w, `{"text":["1", "2"]}`)
+				case "/2212/1":
+					fmt.Fprintln(w, `{"hello":{"world":"moon"}}`)
+				case "/2212/2":
+					fmt.Fprintln(w, `{"space":{"cake":"pumpkin"}}`)
+				}
+			})
+			server := httptest.NewServer(r)
+			config["request.url"] = server.URL
+			config["chain.0.step.request.url"] = server.URL + "/$.exportId/$.text[:]"
+			t.Cleanup(server.Close)
+		},
+		baseConfig: map[string]interface{}{
+			"interval":       1,
+			"request.method": http.MethodGet,
+			"chain": []interface{}{
+				map[string]interface{}{
+					"step": map[string]interface{}{
+						"request.method": http.MethodGet,
+						"replace":        "$.text[:]",
+						"replace_with":   "$.exportId,2212",
+					},
+				},
+			},
+		},
+		expected: []string{
+			`{"hello":{"world":"moon"}}`,
+			`{"space":{"cake":"pumpkin"}}`,
+		},
+	},
+	{
+		name: "replace_clause_with_string_from_string_array",
+		setupServer: func(t testing.TB, h http.HandlerFunc, config map[string]interface{}) {
+			r := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/":
+					fmt.Fprintln(w, `["1", "2"]`)
+				case "/2212/1":
+					fmt.Fprintln(w, `{"hello":{"world":"moon"}}`)
+				case "/2212/2":
+					fmt.Fprintln(w, `{"space":{"cake":"pumpkin"}}`)
+				}
+			})
+			server := httptest.NewServer(r)
+			config["request.url"] = server.URL
+			config["chain.0.step.request.url"] = server.URL + "/$.exportId/$[:]"
+			t.Cleanup(server.Close)
+		},
+		baseConfig: map[string]interface{}{
+			"interval":       1,
+			"request.method": http.MethodGet,
+			"chain": []interface{}{
+				map[string]interface{}{
+					"step": map[string]interface{}{
+						"request.method": http.MethodGet,
+						"replace":        "$[:]",
+						"replace_with":   "$.exportId,2212",
+					},
+				},
+			},
+		},
+		expected: []string{
+			`{"hello":{"world":"moon"}}`,
+			`{"space":{"cake":"pumpkin"}}`,
+		},
+	},
+	{
+		name: "replace_clause_with_int_from_int_array",
+		setupServer: func(t testing.TB, h http.HandlerFunc, config map[string]interface{}) {
+			r := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/":
+					fmt.Fprintln(w, `[1, 2]`)
+				case "/2212/1":
+					fmt.Fprintln(w, `{"hello":{"world":"moon"}}`)
+				case "/2212/2":
+					fmt.Fprintln(w, `{"space":{"cake":"pumpkin"}}`)
+				}
+			})
+			server := httptest.NewServer(r)
+			config["request.url"] = server.URL
+			config["chain.0.step.request.url"] = server.URL + "/$.exportId/$[:]"
+			t.Cleanup(server.Close)
+		},
+		baseConfig: map[string]interface{}{
+			"interval":       1,
+			"request.method": http.MethodGet,
+			"chain": []interface{}{
+				map[string]interface{}{
+					"step": map[string]interface{}{
+						"request.method": http.MethodGet,
+						"replace":        "$[:]",
+						"replace_with":   "$.exportId,2212",
+					},
+				},
+			},
+		},
+		expected: []string{
+			`{"hello":{"world":"moon"}}`,
+			`{"space":{"cake":"pumpkin"}}`,
+		},
+	},
+	{
 		name: "replace_with_clause_with_hardcoded_value_1",
 		setupServer: func(t testing.TB, h http.HandlerFunc, config map[string]interface{}) {
 			r := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1531,8 +1661,20 @@ func TestInput(t *testing.T) {
 			}
 
 			var tempDir string
-			if conf.Request.Tracer != nil {
-				tempDir = t.TempDir()
+			if conf.Request.Tracer.enabled() {
+				err := os.MkdirAll("httpjson", 0o700)
+				if err != nil {
+					t.Fatalf("failed to create root logging destination: %v", err)
+				}
+				tempDir, err = os.MkdirTemp("httpjson", "logs-*")
+				if err != nil {
+					t.Fatalf("failed to create logging destination: %v", err)
+				}
+				tempDir, err = filepath.Abs(tempDir)
+				if err != nil {
+					t.Fatalf("failed to get absolute path for logging destination: %v", err)
+				}
+				defer os.RemoveAll("httpjson")
 				conf.Request.Tracer.Filename = filepath.Join(tempDir, conf.Request.Tracer.Filename)
 			}
 
@@ -1544,8 +1686,11 @@ func TestInput(t *testing.T) {
 			chanClient := beattest.NewChanClient(len(test.expected))
 			t.Cleanup(func() { _ = chanClient.Close() })
 
-			ctx, cancel := newV2Context("httpjson-foo-eb837d4c-5ced-45ed-b05c-de658135e248::https://somesource/someapi")
+			ctx, cancel, err := newV2Context("httpjson-foo-eb837d4c-5ced-45ed-b05c-de658135e248::https://somesource/someapi")
 			t.Cleanup(cancel)
+			if err != nil {
+				t.Fatal(err)
+			}
 
 			var g errgroup.Group
 			g.Go(func() error {
@@ -1562,7 +1707,10 @@ func TestInput(t *testing.T) {
 					t.Errorf("unexpected event: %v", got)
 				}
 				cancel()
-				assert.NoError(t, g.Wait())
+				err = g.Wait()
+				if !sameErrorOrContains(err, test.wantErr) {
+					t.Errorf("unexpected error from running input: got:%v want:%v", err, test.wantErr)
+				}
 				return
 			}
 
@@ -1623,8 +1771,11 @@ func BenchmarkInput(b *testing.B) {
 				chanClient := beattest.NewChanClient(len(test.expected))
 				b.Cleanup(func() { _ = chanClient.Close() })
 
-				ctx, cancel := newV2Context(fmt.Sprintf("%s-%d", test.name, i))
+				ctx, cancel, err := newV2Context(fmt.Sprintf("%s-%d", test.name, i))
 				b.Cleanup(cancel)
+				if err != nil {
+					b.Fatal(err)
+				}
 
 				var g errgroup.Group
 				g.Go(func() error {
@@ -1740,15 +1891,20 @@ func newChainPaginationTestServer(
 	}
 }
 
-func newV2Context(id string) (v2.Context, func()) {
+func newV2Context(id string) (v2.Context, func(), error) {
 	ctx, cancel := context.WithCancel(context.Background())
+	cwd, err := os.Getwd()
+	if err != nil {
+		return v2.Context{}, cancel, fmt.Errorf("failed to get working directory: %w", err)
+	}
 	return v2.Context{
 		Logger:          logp.NewLogger("httpjson_test"),
 		ID:              id,
 		IDWithoutName:   id,
 		Cancelation:     ctx,
+		Agent:           beat.Info{Paths: &paths.Path{Logs: cwd}},
 		MetricsRegistry: monitoring.NewRegistry(),
-	}, cancel
+	}, cancel, nil
 }
 
 //nolint:errcheck // We can safely ignore errors here
@@ -1964,5 +2120,18 @@ func paginationArrayHandler() http.HandlerFunc {
 			_, _ = w.Write([]byte(`[{"foo":"bar"}]`))
 		}
 		count += 1
+	}
+}
+
+// sameErrorOrContains reports whether got matches want: both nil, or got's
+// message contains want's message.
+func sameErrorOrContains(got, want error) bool {
+	switch {
+	case got == nil && want == nil:
+		return true
+	case got == nil, want == nil:
+		return false
+	default:
+		return strings.Contains(got.Error(), want.Error())
 	}
 }

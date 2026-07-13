@@ -80,7 +80,9 @@ type BaseModule struct {
 	config         ModuleConfig
 	rawConfig      *conf.C
 	statusReporter status.StatusReporter
+	userAgent      string
 	Logger         *logp.Logger
+	Paths          *paths.Path
 }
 
 func (m *BaseModule) String() string {
@@ -112,6 +114,11 @@ func (m *BaseModule) SetStatusReporter(statusReporter status.StatusReporter) {
 	m.statusReporter = statusReporter
 }
 
+// UserAgent returns the beat user agent string for HTTP clients created by this module.
+func (m *BaseModule) UserAgent() string {
+	return m.userAgent
+}
+
 // WithConfig re-configures the module with the given raw configuration and returns a
 // copy of the module.
 // Intended to be called from module factories. Note that if metricsets are specified
@@ -137,6 +144,7 @@ func (m *BaseModule) WithConfig(config conf.C) (*BaseModule, error) {
 	newBM := &BaseModule{
 		name:      m.name,
 		rawConfig: &config,
+		userAgent: m.userAgent,
 		Logger:    m.Logger,
 	}
 
@@ -329,13 +337,10 @@ func (b *BaseMetricSet) Registration() MetricSetRegistration {
 	return b.registration
 }
 
-// GetPath returns the paths associated with this MetricSet or
-// the global if none was set.
+// GetPath returns the paths associated with this MetricSet.
+// Paths must be set during construction via NewModule.
 func (b *BaseMetricSet) GetPath() *paths.Path {
-	if b.paths != nil {
-		return b.paths
-	}
-	return paths.Paths
+	return b.paths
 }
 
 // Configuration types
@@ -383,7 +388,7 @@ func (q QueryParams) String() (s string) {
 				u.Add(k, fmt.Sprintf("%v", innerValue))
 			}
 		} else {
-			//nil values in YAML shouldn't be stringified anyhow
+			// nil values in YAML shouldn't be stringified anyhow
 			if v == nil {
 				u.Add(k, "")
 			} else {

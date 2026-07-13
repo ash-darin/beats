@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/elastic/beats/v7/libbeat/beat"
 	conf "github.com/elastic/elastic-agent-libs/config"
 	"github.com/elastic/elastic-agent-libs/logp/logptest"
 	"github.com/elastic/elastic-agent-libs/paths"
@@ -147,6 +148,20 @@ func TestModuleConfigDefaults(t *testing.T) {
 	assert.Empty(t, mc.Hosts)
 }
 
+// TestNewModuleRejectsNilPaths verifies that NewModule returns ErrPathsRequired
+// when paths is nil.
+func TestNewModuleRejectsNilPaths(t *testing.T) {
+	r := newTestRegistry(t)
+
+	c := newConfig(t, map[string]interface{}{
+		"module":     moduleName,
+		"metricsets": []string{metricSetName},
+	})
+
+	_, _, err := NewModule(c, r, beat.Info{Logger: logptest.NewTestingLogger(t, "")})
+	assert.ErrorIs(t, err, ErrPathsRequired)
+}
+
 // TestNewModulesDuplicateHosts verifies that an error is returned by
 // NewModules if any module configuration contains duplicate hosts.
 func TestNewModulesDuplicateHosts(t *testing.T) {
@@ -158,7 +173,7 @@ func TestNewModulesDuplicateHosts(t *testing.T) {
 		"hosts":      []string{"a", "b", "a"},
 	})
 
-	_, _, err := NewModule(c, r, paths.New(), logptest.NewTestingLogger(t, ""))
+	_, _, err := NewModule(c, r, beat.Info{Paths: paths.New(), Logger: logptest.NewTestingLogger(t, "")})
 	assert.Error(t, err)
 }
 
@@ -171,7 +186,7 @@ func TestNewModulesWithDefaultMetricSet(t *testing.T) {
 		"module": moduleName,
 	})
 
-	_, metricSets, err := NewModule(c, r, paths.New(), logptest.NewTestingLogger(t, ""))
+	_, metricSets, err := NewModule(c, r, beat.Info{Paths: paths.New(), Logger: logptest.NewTestingLogger(t, "")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +249,7 @@ func TestNewBaseModuleFromModuleConfigStruct(t *testing.T) {
 
 	c := newConfig(t, moduleConf)
 
-	baseModule, err := newBaseModuleFromConfig(c, logptest.NewTestingLogger(t, ""))
+	baseModule, err := newBaseModuleFromConfig(c, logptest.NewTestingLogger(t, ""), paths.New())
 	assert.NoError(t, err)
 
 	assert.Equal(t, moduleName, baseModule.Name())
@@ -264,7 +279,7 @@ func newTestRegistry(t testing.TB, metricSetOptions ...MetricSetOption) *Registe
 }
 
 func newTestMetricSet(t testing.TB, r *Register, config map[string]interface{}) MetricSet {
-	_, metricsets, err := NewModule(newConfig(t, config), r, paths.New(), logptest.NewTestingLogger(t, ""))
+	_, metricsets, err := NewModule(newConfig(t, config), r, beat.Info{Paths: paths.New(), Logger: logptest.NewTestingLogger(t, "")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +366,7 @@ func TestBaseModuleWithConfig(t *testing.T) {
 				MetricSets: []string{"foo", "bar"},
 			}
 
-			m, _, err := NewModule(conf.MustNewConfigFrom(initConfig), mockRegistry, paths.New(), logptest.NewTestingLogger(t, ""))
+			m, _, err := NewModule(conf.MustNewConfigFrom(initConfig), mockRegistry, beat.Info{Paths: paths.New(), Logger: logptest.NewTestingLogger(t, "")})
 			require.NoError(t, err)
 
 			bm, ok := m.(*BaseModule)

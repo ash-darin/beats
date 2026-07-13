@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/elastic/beats/v7/libbeat/beat"
+	"github.com/elastic/beats/v7/libbeat/beatmonitoring"
 	"github.com/elastic/beats/v7/libbeat/common"
 	"github.com/elastic/beats/v7/libbeat/management/status"
 	"github.com/elastic/beats/v7/metricbeat/mb"
@@ -59,7 +60,7 @@ var (
 type Wrapper struct {
 	mb.Module
 	metricSets []*metricSetWrapper // List of pointers to its associated MetricSets.
-	monitoring beat.Monitoring
+	monitoring beatmonitoring.Monitoring
 
 	// Options
 	maxStartDelay  time.Duration
@@ -89,20 +90,24 @@ type stats struct {
 }
 
 // NewWrapper creates a new module and its associated metricsets based on the given configuration.
-func NewWrapper(config *conf.C, r *mb.Register, logger *logp.Logger, monitoring beat.Monitoring, p *paths.Path, options ...Option) (*Wrapper, error) {
-	module, metricSets, err := mb.NewModule(config, r, p, logger)
+func NewWrapper(config *conf.C, r *mb.Register, info *beat.Info, monitoring beatmonitoring.Monitoring, p *paths.Path, options ...Option) (*Wrapper, error) {
+	beatInfo := *info
+	if p != nil {
+		beatInfo.Paths = p
+	}
+	module, metricSets, err := mb.NewModule(config, r, beatInfo)
 	if err != nil {
 		return nil, err
 	}
-	return createWrapper(module, metricSets, monitoring, logger, options...)
+	return createWrapper(module, metricSets, monitoring, info.Logger, options...)
 }
 
 // NewWrapperForMetricSet creates a wrapper for the selected module and metricset.
-func NewWrapperForMetricSet(module mb.Module, metricSet mb.MetricSet, monitoring beat.Monitoring, logger *logp.Logger, options ...Option) (*Wrapper, error) {
+func NewWrapperForMetricSet(module mb.Module, metricSet mb.MetricSet, monitoring beatmonitoring.Monitoring, logger *logp.Logger, options ...Option) (*Wrapper, error) {
 	return createWrapper(module, []mb.MetricSet{metricSet}, monitoring, logger, options...)
 }
 
-func createWrapper(module mb.Module, metricSets []mb.MetricSet, monitoring beat.Monitoring, logger *logp.Logger, options ...Option) (*Wrapper, error) {
+func createWrapper(module mb.Module, metricSets []mb.MetricSet, monitoring beatmonitoring.Monitoring, logger *logp.Logger, options ...Option) (*Wrapper, error) {
 	wrapper := &Wrapper{
 		Module:     module,
 		metricSets: make([]*metricSetWrapper, len(metricSets)),
@@ -425,7 +430,7 @@ func writeEvent(done <-chan struct{}, out chan<- beat.Event, event beat.Event) b
 	}
 }
 
-func getMetricSetStats(mon beat.Monitoring, module, name string) *stats {
+func getMetricSetStats(mon beatmonitoring.Monitoring, module, name string) *stats {
 	key := fmt.Sprintf("metricbeat.%s.%s", module, name)
 
 	fetchesLock.Lock()

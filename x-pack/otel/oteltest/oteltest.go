@@ -30,8 +30,9 @@ import (
 )
 
 type MockHost struct {
-	mu  sync.Mutex
-	Evt *componentstatus.Event
+	mu   sync.Mutex
+	Evt  *componentstatus.Event
+	Evts []*componentstatus.Event
 }
 
 func (*MockHost) GetExtensions() map[component.ID]component.Component {
@@ -42,12 +43,21 @@ func (h *MockHost) Report(evt *componentstatus.Event) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.Evt = evt
+	h.Evts = append(h.Evts, evt)
 }
 
 func (h *MockHost) getEvent() *componentstatus.Event {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.Evt
+}
+
+func (h *MockHost) GetEvents() []*componentstatus.Event {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]*componentstatus.Event, len(h.Evts))
+	copy(out, h.Evts)
+	return out
 }
 
 type ReceiverConfig struct {
@@ -185,19 +195,33 @@ func CheckReceivers(params CheckReceiversParams) {
 				require.Equal(ct, beatForCompName(compName), zl.ContextMap()["service.name"])
 				break
 			}
-			require.NotNil(ct, host.getEvent(), "expected not nil, got nil")
-
 			if params.Status != nil {
-				assert.Equal(t, params.Status.Status(), params.Status.Status(), host.Evt.Status(),
-					"expected status to be %v, got %v", params.Status.Status(), host.Evt.Status())
-				assert.Equal(t, params.Status.Err(), host.Evt.Err())
-				assert.Equal(t, params.Status.Attributes().AsRaw(), host.Evt.Attributes().AsRaw())
+				// Check the full event history rather than only the last event.
+				// Fast-finishing receivers (e.g. pcap replay) may transition
+				// through StatusOK and into Stopped before the first poll tick.
+				evts := host.GetEvents()
+				require.NotEmpty(ct, evts, "expected at least one status event, got none")
+				var matched bool
+				for _, evt := range evts {
+					if evt.Status() == params.Status.Status() &&
+						assert.ObjectsAreEqual(evt.Err(), params.Status.Err()) &&
+						assert.ObjectsAreEqual(params.Status.Attributes().AsRaw(), evt.Attributes().AsRaw()) {
+						matched = true
+						break
+					}
+				}
+				assert.True(ct, matched,
+					"expected status %v to have been reported at least once; all events: %v",
+					params.Status.Status(), evts)
+			} else {
+				evt := host.getEvent()
+				require.NotNil(ct, evt, "expected not nil, got nil")
 			}
 
 			if params.AssertFunc != nil {
 				params.AssertFunc(ct, logs, zapLogs)
 			}
-		}, 2*time.Minute, 1*time.Second,
+		}, 2*time.Minute, 100*time.Millisecond,
 			"timeout waiting for logger fields from the OTel collector are present in the logs and other assertions to be met")
 		for i, r := range receivers {
 			require.NoErrorf(t, r.Shutdown(ctx), "Error shutting down receiver %d", i)
@@ -250,6 +274,7 @@ type hook struct {
 
 type mockDiagExtension struct {
 	component.Component
+	mu    sync.Mutex
 	hooks map[string][]hook
 }
 
@@ -260,6 +285,8 @@ func (m *mockHost) GetExtensions() map[component.ID]component.Component {
 }
 
 func (m *mockDiagExtension) RegisterDiagnosticHook(name string, description string, filename string, contentType string, fn func() []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.hooks[name] = append(m.hooks[name], hook{
 		description: description,
 		filename:    filename,
@@ -268,21 +295,29 @@ func (m *mockDiagExtension) RegisterDiagnosticHook(name string, description stri
 	})
 }
 
+func (m *mockDiagExtension) getHooks(name string) ([]hook, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	h, ok := m.hooks[name]
+	return h, ok
+}
+
 func TestReceiverHook(t *testing.T, config component.Config, factory receiver.Factory, set receiver.Settings, expectedHooks int) {
-	logs, err := factory.CreateLogs(context.Background(), set, config, consumertest.NewNop())
+	logs, err := factory.CreateLogs(t.Context(), set, config, consumertest.NewNop())
 	diagExt := &mockDiagExtension{
 		hooks: make(map[string][]hook),
 	}
 	require.NoError(t, err)
 	require.NotNil(t, logs)
-	require.NoError(t, logs.Start(context.Background(), &mockHost{diagExt: diagExt}))
+	require.NoError(t, logs.Start(t.Context(), &mockHost{diagExt: diagExt}))
 
 	defer func() {
-		require.NoError(t, logs.Shutdown(context.Background()))
+		require.NoError(t, logs.Shutdown(t.Context()))
 	}()
 
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
-		assert.Contains(c, diagExt.hooks, set.ID.String())
-		assert.Len(c, diagExt.hooks[set.ID.String()], expectedHooks)
+		hooks, ok := diagExt.getHooks(set.ID.String())
+		assert.True(c, ok, "expected hooks to contain key %s", set.ID.String())
+		assert.Len(c, hooks, expectedHooks)
 	}, 5*time.Second, 100*time.Millisecond, "expected hook to be registered")
 }

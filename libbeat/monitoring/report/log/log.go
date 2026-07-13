@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/elastic/beats/v7/libbeat/beat"
+	"github.com/elastic/beats/v7/libbeat/beatmonitoring"
 	"github.com/elastic/beats/v7/libbeat/monitoring/report"
 	conf "github.com/elastic/elastic-agent-libs/config"
 	"github.com/elastic/elastic-agent-libs/logp"
@@ -70,13 +71,19 @@ var gauges = map[string]bool{
 	"system.load.norm.1":                   true,
 	"system.load.norm.5":                   true,
 	"system.load.norm.15":                  true,
+
+	"filebeat.filestream.files_matched":          true,
+	"filebeat.filestream.files_unique":           true,
+	"filebeat.filestream.files_no_ingest_target": true,
+	"filebeat.filestream.files_ignored":          true,
+	"filebeat.filestream.files_empty":            true,
 }
 
-// isGauge returns true when the given metric key name represents a gauge value.
+// IsGauge returns true when the given metric key name represents a gauge value.
 // Any metric name suffixed in '_gauge' or containing '.histogram.' is
 // treated as a gauge. Other metrics can specifically be marked as gauges
 // through the list maintained in this package.
-func isGauge(key string) bool {
+func IsGauge(key string) bool {
 	if strings.HasSuffix(key, "_gauge") || strings.Contains(key, ".histogram.") {
 		return true
 	}
@@ -104,7 +111,7 @@ type Reporter struct {
 // MakeReporter returns a new Reporter that periodically reports
 // metrics via logp. If cfg is nil defaults will be used.  If pointers
 // to monitoring registries are nil, defaults will be used.
-func MakeReporter(beat beat.Info, cfg *conf.C, info, state, stats, inputs *monitoring.Registry) (report.Reporter, error) {
+func MakeReporter(beat beat.Info, cfg *conf.C, mon beatmonitoring.Monitoring) (report.Reporter, error) {
 	config := defaultConfig()
 	if cfg != nil {
 		if err := cfg.Unpack(&config); err != nil {
@@ -120,25 +127,12 @@ func MakeReporter(beat beat.Info, cfg *conf.C, info, state, stats, inputs *monit
 		registries: map[string]*monitoring.Registry{},
 	}
 
-	if info != nil && state != nil && stats != nil && inputs != nil {
-		// That 'stats' namespace is reported as 'metrics' in the Elasticsearch
-		// reporter so use the same name for consistency.
-		r.registries["metrics"] = stats
-		r.registries["info"] = info
-		r.registries["state"] = state
-		r.registries["dataset"] = inputs
-	} else {
-		for _, ns := range r.Namespaces {
-			reg := monitoring.GetNamespace(ns).GetRegistry()
-
-			// That 'stats' namespace is reported as 'metrics' in the Elasticsearch
-			// reporter so use the same name for consistency.
-			if ns == "stats" {
-				ns = "metrics"
-			}
-			r.registries[ns] = reg
-		}
-	}
+	// That 'stats' namespace is reported as 'metrics' in the Elasticsearch
+	// reporter so use the same name for consistency.
+	r.registries["metrics"] = mon.StatsRegistry()
+	r.registries["info"] = mon.InfoRegistry()
+	r.registries["state"] = mon.StateRegistry()
+	r.registries["dataset"] = mon.InputsRegistry()
 
 	r.wg.Add(1)
 	go func() {
@@ -154,6 +148,10 @@ func (r *Reporter) Stop() {
 }
 
 func (r *Reporter) snapshotLoop() {
+	if r.Period == 0 {
+		r.logger.Infof("Skipping metrics logging")
+		return
+	}
 	r.logger.Infof("Starting metrics logging every %v", r.Period)
 	defer r.logger.Infof("Stopping metrics logging.")
 	defer func() {
@@ -231,7 +229,7 @@ func makeDeltaSnapshot(prev, cur monitoring.FlatSnapshot) monitoring.FlatSnapsho
 	}
 
 	for k, i := range cur.Ints {
-		if isGauge(k) {
+		if IsGauge(k) {
 			delta.Ints[k] = i
 		} else {
 			if p := prev.Ints[k]; p != i {
@@ -241,7 +239,7 @@ func makeDeltaSnapshot(prev, cur monitoring.FlatSnapshot) monitoring.FlatSnapsho
 	}
 
 	for k, f := range cur.Floats {
-		if isGauge(k) {
+		if IsGauge(k) {
 			delta.Floats[k] = f
 		} else if p := prev.Floats[k]; p != f {
 			delta.Floats[k] = f - p
